@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-BOT NOTICIAS VIRALES LATAM 24/7 - V3.1
+BOT NOTICIAS VIRALES LATAM 24/7 - V3.2
 Generacion de imagenes contextualizadas con analisis semantico
 """
 
@@ -30,7 +30,17 @@ ESTADO_PATH = os.getenv('ESTADO_PATH', 'data/estado_bot_viral.json')
 TIEMPO_ENTRE_PUBLICACIONES = 55
 MAX_TITULOS_HISTORIA = 300
 UMBRAL_SIMILITUD_TITULO = 0.85
-UMBRAL_SIMILITUD_CONTENIDO = 0.75  # VARIABLE FALTANTE AÑADIDA
+UMBRAL_SIMILITUD_CONTENIDO = 0.75
+
+# Colores para imagenes de backup (formato RGB tuples - SIN rgba)
+COLORES_BACKUP = {
+    'urgente': (220, 20, 60),      # Crimson
+    'negativa': (139, 0, 0),       # DarkRed
+    'positiva': (34, 139, 34),     # ForestGreen
+    'neutral': (25, 25, 112),      # MidnightBlue
+    'deporte': (255, 140, 0),      # DarkOrange
+    'politica': (75, 0, 130)       # Indigo
+}
 
 # ═══════════════════════════════════════════════════════════════
 # BANCO DE DATOS VISUAL CONTEXTUALIZADO
@@ -593,7 +603,7 @@ def calcular_puntaje_viral(titulo, desc):
     return puntaje
 
 # ═══════════════════════════════════════════════════════════════
-# EXTRACCION Y GENERACION
+# EXTRACCION Y GENERACION DE IMAGENES
 # ═══════════════════════════════════════════════════════════════
 
 def extraer_contenido(url):
@@ -625,10 +635,11 @@ def extraer_contenido(url):
         return None, None
 
 def generar_imagen_contextual(titulo, contenido, descripcion=""):
+    """Intenta generar imagen con Pollinations.ai"""
     generador = GeneradorPrompts()
     prompt = generador.generar(titulo, contenido, descripcion)
     
-    log(f"Prompt generado: {prompt[:100]}...", 'imagen')
+    log(f"Prompt: {prompt[:100]}...", 'imagen')
     
     try:
         prompt_encoded = quote(prompt)
@@ -638,86 +649,109 @@ def generar_imagen_contextual(titulo, contenido, descripcion=""):
         response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=50)
         
         if response.status_code == 200:
-            img_path = f'/tmp/viral_contextual_{generar_hash(titulo)}_{seed}.jpg'
+            img_path = f'/tmp/viral_{generar_hash(titulo)}_{seed}.jpg'
             with open(img_path, 'wb') as f:
                 f.write(response.content)
             
             if os.path.getsize(img_path) > 15000:
-                log(f"Imagen contextual generada: {img_path}", 'exito')
+                log(f"Imagen IA generada: {img_path}", 'exito')
                 return img_path, prompt
             else:
                 os.remove(img_path)
+                log("Imagen muy pequeña, usando backup", 'advertencia')
                 return None, prompt
+        log(f"Error HTTP {response.status_code} de Pollinations", 'error')
         return None, prompt
     except Exception as e:
         log(f"Error generando imagen: {e}", 'error')
         return None, prompt
 
 def crear_imagen_backup(titulo, analisis_contexto=None):
+    """Crea imagen de respaldo cuando la IA falla - CORREGIDO"""
     try:
         from PIL import Image, ImageDraw, ImageFont
         
-        colores_emocion = {
-            'urgente': '#FF0000',
-            'negativa': '#8B0000',
-            'positiva': '#006400',
-            'neutral': '#1E3A8A'
-        }
+        # Seleccionar color segun contexto
+        emocion = 'neutral'
+        if analisis_contexto:
+            emocion = analisis_contexto.get('emocion', 'neutral')
+            if analisis_contexto.get('deporte'):
+                emocion = 'deporte'
+            elif analisis_contexto.get('personaje_principal'):
+                emocion = 'politica'
         
-        color_fondo = colores_emocion.get(
-            analisis_contexto.get('emocion', 'neutral') if analisis_contexto else 'neutral', 
-            '#1E3A8A'
-        )
+        color_fondo = COLORES_BACKUP.get(emocion, COLORES_BACKUP['neutral'])
         
+        # Crear imagen
         img = Image.new('RGB', (1200, 630), color=color_fondo)
         draw = ImageDraw.Draw(img)
         
+        # Cargar fuentes
         try:
-            font_titulo = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 42)
-            font_sub = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24)
-            font_contexto = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 20)
+            font_titulo = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
+            font_sub = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 22)
+            font_contexto = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
         except:
-            font_titulo = ImageFont.load_default()
-            font_sub = font_contexto = font_titulo
+            try:
+                font_titulo = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 40)
+                font_sub = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 22)
+                font_contexto = font_sub
+            except:
+                font_titulo = ImageFont.load_default()
+                font_sub = font_contexto = font_titulo
         
-        draw.rectangle([(0, 0), (1200, 15)], fill='white')
-        draw.rectangle([(0, 615), (1200, 630)], fill='white')
+        # Barra superior e inferior (blanco RGB)
+        draw.rectangle([(0, 0), (1200, 12)], fill=(255, 255, 255))
+        draw.rectangle([(0, 618), (1200, 630)], fill=(255, 255, 255))
         
-        y_offset = 0
+        # Info de contexto arriba
+        y_pos = 30
         if analisis_contexto:
-            contexto_texto = []
+            info_lineas = []
             if analisis_contexto.get('personaje_principal'):
-                personaje = PERSONAJES_POLITICOS[analisis_contexto['personaje_principal']]['nombre']
-                contexto_texto.append(f"PERSONAJE: {personaje}")
+                nombre = PERSONAJES_POLITICOS[analisis_contexto['personaje_principal']]['nombre']
+                info_lineas.append(f"PERSONAJE: {nombre}")
             if analisis_contexto.get('pais'):
-                contexto_texto.append(f"PAIS: {analisis_contexto['pais'].upper()}")
+                info_lineas.append(f"PAIS: {analisis_contexto['pais'].upper()}")
             if analisis_contexto.get('deporte'):
-                contexto_texto.append(f"DEPORTE: {analisis_contexto['deporte'].upper()}")
+                info_lineas.append(f"DEPORTE: {analisis_contexto['deporte'].upper()}")
+            if analisis_contexto.get('tipo_evento'):
+                info_lineas.append(f"EVENTO: {analisis_contexto['tipo_evento'].upper()}")
             
-            if contexto_texto:
-                y_offset = 40
-                draw.text((50, 20), " | ".join(contexto_texto), font=font_contexto, fill='rgba(255,255,255,0.8)')
+            if info_lineas:
+                texto_info = " | ".join(info_lineas)
+                # Color gris claro (RGB) - CORREGIDO
+                draw.text((50, y_pos), texto_info, font=font_contexto, fill=(200, 200, 200))
+                y_pos = 60
         
+        # Titulo centrado con wrap
         import textwrap
-        titulo_wrapped = textwrap.fill(titulo[:120], width=32)
+        titulo_wrapped = textwrap.fill(titulo[:130], width=30)
         lineas = titulo_wrapped.split('\n')
-        y_start = ((630 - len(lineas) * 50) // 2) - y_offset
+        y_start = ((630 - len(lineas) * 48) // 2) + (y_pos // 2)
         
+        # Dibujar cada linea con sombra
         for i, linea in enumerate(lineas):
-            y = y_start + i * 50
-            draw.text((52, y+2), linea, font=font_titulo, fill='black')
-            draw.text((50, y), linea, font=font_titulo, fill='white')
+            y = y_start + (i * 48)
+            # Sombra (negro RGB)
+            draw.text((52, y+2), linea, font=font_titulo, fill=(0, 0, 0))
+            # Texto (blanco RGB)
+            draw.text((50, y), linea, font=font_titulo, fill=(255, 255, 255))
         
-        draw.text((50, 550), "NOTICIAS VIRALES LATAM", font=font_sub, fill='white')
-        draw.text((50, 580), f"24/7 | {datetime.now().strftime('%H:%M')}", font=font_sub, fill='rgba(255,255,255,0.8)')
+        # Footer - CORREGIDO (sin rgba)
+        draw.text((50, 560), "NOTICIAS VIRALES LATAM 24/7", font=font_sub, fill=(255, 255, 255))
+        draw.text((50, 590), f"{datetime.now().strftime('%d/%m/%Y %H:%M')} | Informacion que importa", 
+                 font=font_contexto, fill=(180, 180, 180))
         
-        img_path = f'/tmp/viral_backup_{generar_hash(titulo)}.jpg'
-        img.save(img_path, 'JPEG', quality=92)
+        # Guardar
+        img_path = f'/tmp/viral_backup_{generar_hash(titulo[:50])}.jpg'
+        img.save(img_path, 'JPEG', quality=90)
         
+        log(f"Imagen backup creada: {img_path}", 'exito')
         return img_path
         
     except Exception as e:
-        log(f"Error imagen backup: {e}", 'error')
+        log(f"Error creando imagen backup: {e}", 'error')
         return None
 
 # ═══════════════════════════════════════════════════════════════
@@ -834,7 +868,7 @@ def noticia_ya_publicada(h, url, titulo, desc=""):
     if desc:
         for desc_hist in h.get('descripciones', []):
             sim = calcular_similitud(desc[:150], desc_hist[:150])
-            if sim >= UMBRAL_SIMILITUD_CONTENIDO:  # AHORA SI ESTA DEFINIDA
+            if sim >= UMBRAL_SIMILITUD_CONTENIDO:
                 return True, f"similitud_contenido_{sim:.2f}"
     return False, "nuevo"
 
@@ -1050,7 +1084,7 @@ def verificar_tiempo():
 
 def main():
     print("\n" + "="*60)
-    print("BOT NOTICIAS VIRALES LATAM 24/7 - V3.1")
+    print("BOT NOTICIAS VIRALES LATAM 24/7 - V3.2")
     print(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*60)
     
@@ -1141,18 +1175,19 @@ def main():
     publicacion = construir_publicacion_viral(seleccionada['titulo'], contenido_final, seleccionada['fuente'])
     hashtags = generar_hashtags_virales(seleccionada['titulo'], contenido_final)
     
-    log("Generando imagen contextual...", 'imagen')
+    log("Generando imagen...", 'imagen')
     imagen_path, prompt_usado = generar_imagen_contextual(seleccionada['titulo'], contenido_final, seleccionada.get('descripcion', ''))
     
     if not imagen_path:
+        log("IA fallo, creando imagen backup...", 'advertencia')
         imagen_path = crear_imagen_backup(seleccionada['titulo'], contexto)
     
     if not imagen_path:
-        log("ERROR: No se pudo generar imagen", 'error')
+        log("ERROR: No se pudo generar ninguna imagen", 'error')
         return False
     
     if prompt_usado:
-        log(f"Prompt: {prompt_usado[:100]}...", 'imagen')
+        log(f"Prompt usado: {prompt_usado[:80]}...", 'imagen')
     
     exito = publicar_facebook(seleccionada['titulo'], publicacion, imagen_path, hashtags)
     
@@ -1171,7 +1206,7 @@ def main():
         }
         guardar_json(ESTADO_PATH, estado)
         total = historial.get('estadisticas', {}).get('total_publicadas', 0)
-        log(f"EXITO - Total: {total} noticias", 'exito')
+        log(f"EXITO - Total: {total} noticias publicadas", 'exito')
         return True
     else:
         log("Publicacion fallida", 'error')
