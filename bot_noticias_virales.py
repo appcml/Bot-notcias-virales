@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-BOT NOTICIAS VIRALES LATAM 24/7 - V3.0
+BOT NOTICIAS VIRALES LATAM 24/7 - V3.1
 Generacion de imagenes contextualizadas con analisis semantico
 """
 
@@ -30,12 +30,12 @@ ESTADO_PATH = os.getenv('ESTADO_PATH', 'data/estado_bot_viral.json')
 TIEMPO_ENTRE_PUBLICACIONES = 55
 MAX_TITULOS_HISTORIA = 300
 UMBRAL_SIMILITUD_TITULO = 0.85
+UMBRAL_SIMILITUD_CONTENIDO = 0.75  # VARIABLE FALTANTE AÑADIDA
 
 # ═══════════════════════════════════════════════════════════════
 # BANCO DE DATOS VISUAL CONTEXTUALIZADO
 # ═══════════════════════════════════════════════════════════════
 
-# Personajes politicos y sus atributos visuales
 PERSONAJES_POLITICOS = {
     'trump': {
         'nombre': 'Donald Trump',
@@ -140,7 +140,6 @@ PERSONAJES_POLITICOS = {
     }
 }
 
-# Eventos deportivos y sus elementos visuales
 EVENTOS_DEPORTIVOS = {
     'futbol': {
         'elementos': 'soccer ball, stadium, goal net, green field',
@@ -184,7 +183,6 @@ EVENTOS_DEPORTIVOS = {
     }
 }
 
-# Crisis y eventos noticiosos visuales
 EVENTOS_CRISIS = {
     'protesta': {
         'elementos': 'crowd with signs, smoke, police line, raised fists',
@@ -221,7 +219,6 @@ EVENTOS_CRISIS = {
     }
 }
 
-# Simbolos nacionales para contexto geografico
 BANDERAS_SIMBOLOS = {
     'mexico': 'green white red flag, eagle snake cactus',
     'argentina': 'light blue white flag, sun of may',
@@ -236,7 +233,7 @@ BANDERAS_SIMBOLOS = {
 }
 
 # ═══════════════════════════════════════════════════════════════
-# ANALISIS SEMANTICO AVANZADO DE NOTICIAS
+# ANALISIS SEMANTICO AVANZADO
 # ═══════════════════════════════════════════════════════════════
 
 class AnalizadorNoticias:
@@ -247,7 +244,6 @@ class AnalizadorNoticias:
         self.banderas = BANDERAS_SIMBOLOS
     
     def analizar(self, titulo, contenido, descripcion=""):
-        """Analiza completo de la noticia para extraccion visual"""
         texto_completo = f"{titulo} {descripcion} {contenido[:500]}".lower()
         
         resultado = {
@@ -269,14 +265,14 @@ class AnalizadorNoticias:
         
         # Detectar deporte
         for key, data in self.deportes.items():
-            if key in texto_completo or any(palabra in texto_completo for palabra in [key, 'deporte', 'equipo', 'partido']):
+            if key in texto_completo:
                 resultado['deporte'] = key
                 resultado['emocion'] = self._detectar_emocion_deporte(texto_completo)
                 break
         
-        # Detectar tipo de crisis/evento
+        # Detectar crisis
         for key, data in self.crisis.items():
-            if key in texto_completo or any(sinonimo in texto_completo for sinonimo in self._get_sinonimos_crisis(key)):
+            if key in texto_completo or any(s in texto_completo for s in self._get_sinonimos_crisis(key)):
                 resultado['tipo_evento'] = key
                 resultado['intensidad'] = self._detectar_intensidad(texto_completo)
                 break
@@ -287,16 +283,13 @@ class AnalizadorNoticias:
                 resultado['pais'] = key
                 break
         
-        # Detectar emocion general si no es deporte
         if not resultado['deporte']:
             resultado['emocion'] = self._detectar_emocion_general(texto_completo)
         
         return resultado
     
     def _detectar_escenario_personaje(self, personaje_key, texto):
-        """Detecta el contexto especifico del personaje"""
         escenarios = self.personajes[personaje_key]['escenarios']
-        
         palabras_clave = {
             'victoria': ['gana', 'triunfo', 'victoria', 'electo', 'ganador', 'celebra'],
             'controversia': ['escandalo', 'polemica', 'critica', 'denuncia', 'juicio', 'impeachment'],
@@ -304,15 +297,12 @@ class AnalizadorNoticias:
             'campaña': ['campaña', 'rally', 'votantes', 'eleccion', 'urnas'],
             'crisis': ['crisis', 'emergencia', 'urgente', 'grave', 'escandalo']
         }
-        
         for escenario, palabras in palabras_clave.items():
-            if any(palabra in texto for palabra in palabras):
+            if any(p in texto for p in palabras):
                 return escenario if escenario in escenarios else 'default'
-        
         return 'default'
     
     def _detectar_emocion_deporte(self, texto):
-        """Detecta la emocion especifica en eventos deportivos"""
         emociones = {
             'gol': ['gol', 'anota', 'marcador', 'triunfo', 'victoria'],
             'lesion': ['lesion', 'lesionado', 'medico', 'ambulancia', 'retirado'],
@@ -320,40 +310,33 @@ class AnalizadorNoticias:
             'final': ['final', 'campeon', 'trofeo', 'titulo', 'copa'],
             'derrota': ['derrota', 'perdio', 'eliminado', 'fracaso', 'llanto']
         }
-        
         for emocion, palabras in emociones.items():
-            if any(palabra in texto for palabra in palabras):
+            if any(p in texto for p in palabras):
                 return emocion
-        
         return 'default'
     
     def _detectar_intensidad(self, texto):
-        """Detecta intensidad de crisis"""
         alta = ['violento', 'muertos', 'heridos', 'grave', 'emergencia', 'masacre']
         media = ['protesta', 'marcha', 'manifestacion', 'bloqueo']
-        
-        if any(palabra in texto for palabra in alta):
+        if any(p in texto for p in alta):
             return 'alta'
-        elif any(palabra in texto for palabra in media):
+        elif any(p in texto for p in media):
             return 'media'
         return 'baja'
     
     def _detectar_emocion_general(self, texto):
-        """Detecta emocion general de la noticia"""
         positivas = ['celebra', 'triunfo', 'exito', 'logro', 'avance', 'paz']
         negativas = ['tragedia', 'crisis', 'muerte', 'violencia', 'guerra', 'corrupcion']
         urgentes = ['urgente', 'alerta', 'emergencia', 'ultima hora', 'breaking']
-        
-        if any(palabra in texto for palabra in urgentes):
+        if any(p in texto for p in urgentes):
             return 'urgente'
-        elif any(palabra in texto for palabra in negativas):
+        elif any(p in texto for p in negativas):
             return 'negativa'
-        elif any(palabra in texto for palabra in positivas):
+        elif any(p in texto for p in positivas):
             return 'positiva'
         return 'neutral'
     
     def _get_sinonimos_crisis(self, tipo):
-        """Retorna sinonimos para tipos de crisis"""
         sinonimos = {
             'protesta': ['manifestacion', 'marcha', 'disturbios', 'disturbio', 'bloqueo', 'huelga'],
             'desastre_natural': ['terremoto', 'sismo', 'huracan', 'inundacion', 'incendio', 'tsunami'],
@@ -363,7 +346,7 @@ class AnalizadorNoticias:
         return sinonimos.get(tipo, [])
 
 # ═══════════════════════════════════════════════════════════════
-# GENERADOR DE PROMPTS CONTEXTUALIZADOS
+# GENERADOR DE PROMPTS
 # ═══════════════════════════════════════════════════════════════
 
 class GeneradorPrompts:
@@ -371,10 +354,8 @@ class GeneradorPrompts:
         self.analizador = AnalizadorNoticias()
     
     def generar(self, titulo, contenido, descripcion=""):
-        """Genera prompt especifico basado en analisis semantico"""
         analisis = self.analizador.analizar(titulo, contenido, descripcion)
         
-        # Construir prompt segun tipo de noticia
         if analisis['personaje_principal']:
             return self._prompt_personaje(analisis, titulo)
         elif analisis['deporte']:
@@ -385,59 +366,43 @@ class GeneradorPrompts:
             return self._prompt_generico(analisis, titulo)
     
     def _prompt_personaje(self, analisis, titulo):
-        """Prompt para noticias con personajes politicos"""
         personaje = PERSONAJES_POLITICOS[analisis['personaje_principal']]
         escenario_key = analisis['escenario']
         escenario_desc = personaje['escenarios'].get(escenario_key, personaje['escenarios']['default'])
-        
         atributos = personaje['atributos']
         nombre = personaje['nombre']
         
-        # Contexto geografico
         contexto_pais = ""
         if analisis['pais']:
             bandera = BANDERAS_SIMBOLOS.get(analisis['pais'], '')
             contexto_pais = f", {bandera} in background"
         
-        # Emocion especifica
         emocion_desc = self._get_emocion_desc(analisis['emocion'])
         
-        prompt = (
+        return (
             f"breaking news photography of {nombre}, {atributos}, "
             f"{escenario_desc}{contexto_pais}, {emocion_desc}, "
             f"professional photojournalism, dramatic lighting, news broadcast quality, "
             f"high detail, 4k, front page newspaper style"
         )
-        
-        return prompt
     
     def _prompt_deporte(self, analisis, titulo):
-        """Prompt para noticias deportivas"""
         deporte_data = EVENTOS_DEPORTIVOS[analisis['deporte']]
         emocion_key = analisis['emocion']
-        
-        if emocion_key in deporte_data['emociones']:
-            escena = deporte_data['emociones'][emocion_key]
-        else:
-            escena = f"intense {analisis['deporte']} action"
-        
+        escena = deporte_data['emociones'].get(emocion_key, f"intense {analisis['deporte']} action")
         elementos = deporte_data['elementos']
         
-        # Contexto geografico si aplica
         contexto = ""
         if analisis['pais']:
             contexto = f", {BANDERAS_SIMBOLOS.get(analisis['pais'], '')} visible"
         
-        prompt = (
+        return (
             f"sports breaking news photography, {escena}, {elementos}{contexto}, "
             f"dynamic action shot, professional sports photography, "
             f"stadium atmosphere, dramatic moment, high energy, 4k, ESPN style"
         )
-        
-        return prompt
     
     def _prompt_crisis(self, analisis, titulo):
-        """Prompt para crisis y eventos noticiosos"""
         crisis_data = EVENTOS_CRISIS[analisis['tipo_evento']]
         
         if analisis['tipo_evento'] == 'desastre_natural':
@@ -453,23 +418,17 @@ class GeneradorPrompts:
             intensidad = analisis.get('intensidad', 'media')
             escena = crisis_data['intensidad'].get(intensidad, crisis_data['elementos'])
         
-        # Contexto geografico
         contexto = ""
         if analisis['pais']:
             contexto = f", location: {analisis['pais']}, {BANDERAS_SIMBOLOS.get(analisis['pais'], '')}"
         
-        prompt = (
+        return (
             f"breaking news documentary photography, {escena}{contexto}, "
             f"photojournalism style, urgent atmosphere, dramatic lighting, "
             f"news front page quality, high impact, 4k, Reuters style"
         )
-        
-        return prompt
     
     def _prompt_generico(self, analisis, titulo):
-        """Prompt para noticias genericas"""
-        emocion = analisis['emocion']
-        
         estilos = {
             'urgente': 'breaking news red alert style, urgent typography elements',
             'negativa': 'dramatic shadows, serious tone, documentary style',
@@ -481,19 +440,15 @@ class GeneradorPrompts:
         if analisis['pais']:
             contexto = f", {BANDERAS_SIMBOLOS.get(analisis['pais'], '')} in composition"
         
-        # Extraer tema del titulo
         tema = self._extraer_tema_principal(titulo)
         
-        prompt = (
+        return (
             f"breaking news illustration, {tema}{contexto}, "
-            f"{estilos.get(emocion, estilos['neutral'])}, "
+            f"{estilos.get(analisis['emocion'], estilos['neutral'])}, "
             f"professional news broadcast graphic, high quality, 4k"
         )
-        
-        return prompt
     
     def _get_emocion_desc(self, emocion):
-        """Descripcion de emocion para personajes"""
         descripciones = {
             'urgente': 'intense serious expression, urgent atmosphere',
             'negativa': 'concerned expression, serious demeanor',
@@ -503,7 +458,6 @@ class GeneradorPrompts:
         return descripciones.get(emocion, descripciones['neutral'])
     
     def _detectar_subtipo_desastre(self, texto):
-        """Detecta tipo especifico de desastre natural"""
         texto = texto.lower()
         if any(p in texto for p in ['terremoto', 'sismo', 'temblor']):
             return 'terremoto'
@@ -516,7 +470,6 @@ class GeneradorPrompts:
         return 'default'
     
     def _detectar_subtipo_economia(self, texto):
-        """Detecta tipo especifico de crisis economica"""
         texto = texto.lower()
         if any(p in texto for p in ['inflacion', 'precios', 'supermercado']):
             return 'inflacion'
@@ -527,7 +480,6 @@ class GeneradorPrompts:
         return 'default'
     
     def _detectar_subtipo_crimen(self, texto):
-        """Detecta tipo especifico de crimen"""
         texto = texto.lower()
         if any(p in texto for p in ['narco', 'droga', 'cartel', 'trafico']):
             return 'narco'
@@ -536,8 +488,6 @@ class GeneradorPrompts:
         return 'homicidio'
     
     def _extraer_tema_principal(self, titulo):
-        """Extrae tema principal para prompt generico"""
-        # Remover palabras comunes
         stop_words = {'el', 'la', 'de', 'y', 'en', 'un', 'una', 'los', 'las', 'del', 'al', 'con'}
         palabras = [p for p in titulo.lower().split() if p not in stop_words and len(p) > 3]
         return ' '.join(palabras[:5]) if palabras else "breaking news"
@@ -629,14 +579,13 @@ def limpiar_texto(texto):
 def calcular_puntaje_viral(titulo, desc):
     txt = f"{titulo} {desc}".lower()
     puntaje = 0
-    for palabra in PALABRAS_VIRALES_ALTA:
+    palabras_alta = ["golpe de estado", "corrupcion", "dictadura", "protestas", "crisis", "impeachment", 
+                     "masacre", "feminicidio", "escandalo", "muerte", "viral", "trump", "milei", "amlo"]
+    for palabra in palabras_alta:
         if palabra in txt:
             puntaje += 10
             if palabra in titulo.lower():
                 puntaje += 5
-    for palabra in PALABRAS_VIRALES_MEDIA:
-        if palabra in txt:
-            puntaje += 3
     if 40 <= len(titulo) <= 90:
         puntaje += 5
     if re.search(r'\d+', titulo):
@@ -644,7 +593,7 @@ def calcular_puntaje_viral(titulo, desc):
     return puntaje
 
 # ═══════════════════════════════════════════════════════════════
-# EXTRACCION DE CONTENIDO
+# EXTRACCION Y GENERACION
 # ═══════════════════════════════════════════════════════════════
 
 def extraer_contenido(url):
@@ -675,12 +624,7 @@ def extraer_contenido(url):
     except:
         return None, None
 
-# ═══════════════════════════════════════════════════════════════
-# GENERACION DE IMAGENES CONTEXTUALIZADAS
-# ═══════════════════════════════════════════════════════════════
-
 def generar_imagen_contextual(titulo, contenido, descripcion=""):
-    """Genera imagen con contexto especifico de la noticia"""
     generador = GeneradorPrompts()
     prompt = generador.generar(titulo, contenido, descripcion)
     
@@ -710,11 +654,9 @@ def generar_imagen_contextual(titulo, contenido, descripcion=""):
         return None, prompt
 
 def crear_imagen_backup(titulo, analisis_contexto=None):
-    """Imagen de respaldo con informacion del contexto"""
     try:
         from PIL import Image, ImageDraw, ImageFont
         
-        # Colores segun emocion
         colores_emocion = {
             'urgente': '#FF0000',
             'negativa': '#8B0000',
@@ -738,11 +680,9 @@ def crear_imagen_backup(titulo, analisis_contexto=None):
             font_titulo = ImageFont.load_default()
             font_sub = font_contexto = font_titulo
         
-        # Barras decorativas
         draw.rectangle([(0, 0), (1200, 15)], fill='white')
         draw.rectangle([(0, 615), (1200, 630)], fill='white')
         
-        # Contexto si existe
         y_offset = 0
         if analisis_contexto:
             contexto_texto = []
@@ -758,7 +698,6 @@ def crear_imagen_backup(titulo, analisis_contexto=None):
                 y_offset = 40
                 draw.text((50, 20), " | ".join(contexto_texto), font=font_contexto, fill='rgba(255,255,255,0.8)')
         
-        # Titulo
         import textwrap
         titulo_wrapped = textwrap.fill(titulo[:120], width=32)
         lineas = titulo_wrapped.split('\n')
@@ -769,7 +708,6 @@ def crear_imagen_backup(titulo, analisis_contexto=None):
             draw.text((52, y+2), linea, font=font_titulo, fill='black')
             draw.text((50, y), linea, font=font_titulo, fill='white')
         
-        # Footer
         draw.text((50, 550), "NOTICIAS VIRALES LATAM", font=font_sub, fill='white')
         draw.text((50, 580), f"24/7 | {datetime.now().strftime('%H:%M')}", font=font_sub, fill='rgba(255,255,255,0.8)')
         
@@ -783,7 +721,7 @@ def crear_imagen_backup(titulo, analisis_contexto=None):
         return None
 
 # ═══════════════════════════════════════════════════════════════
-# CONSTRUCCION DE PUBLICACION
+# PUBLICACION
 # ═══════════════════════════════════════════════════════════════
 
 def dividir_parrafos_viral(texto):
@@ -812,12 +750,19 @@ def construir_publicacion_viral(titulo, contenido, fuente):
         oraciones = [o.strip() for o in re.split(r'(?<=[.!?])\s+', contenido) if len(o.strip()) > 15]
         parrafos = [' '.join(oraciones[i:i+2]) for i in range(0, min(5, len(oraciones)), 2)]
     
+    CTAS = [
+        "QUE OPINAS? Dejalo en los comentarios!",
+        "COMPARTE si crees que esto debe saberse",
+        "Siguenos para mas noticias virales de LATAM",
+        "ULTIMO MINUTO - Informacion en constante actualizacion"
+    ]
+    
     lineas = [titulo_limpio, "", "-" * 20, ""]
     for i, parrafo in enumerate(parrafos):
         lineas.append(parrafo)
         if i < len(parrafos) - 1:
             lineas.append("")
-    lineas.extend(["", "-" * 20, "", random.choice(CTAS_VIRALES), "", f"Fuente: {fuente}", "Noticias Virales LATAM 24/7"])
+    lineas.extend(["", "-" * 20, "", random.choice(CTAS), "", f"Fuente: {fuente}", "Noticias Virales LATAM 24/7"])
     return '\n'.join(lineas)
 
 def generar_hashtags_virales(titulo, contenido):
@@ -836,7 +781,7 @@ def generar_hashtags_virales(titulo, contenido):
     return ' '.join(hashtags[:7])
 
 # ═══════════════════════════════════════════════════════════════
-# GESTION DE HISTORIAL
+# HISTORIAL
 # ═══════════════════════════════════════════════════════════════
 
 def cargar_historial():
@@ -889,7 +834,7 @@ def noticia_ya_publicada(h, url, titulo, desc=""):
     if desc:
         for desc_hist in h.get('descripciones', []):
             sim = calcular_similitud(desc[:150], desc_hist[:150])
-            if sim >= UMBRAL_SIMILITUD_CONTENIDO:
+            if sim >= UMBRAL_SIMILITUD_CONTENIDO:  # AHORA SI ESTA DEFINIDA
                 return True, f"similitud_contenido_{sim:.2f}"
     return False, "nuevo"
 
@@ -910,29 +855,14 @@ def guardar_historial(h, url, titulo, desc=""):
     return h
 
 # ═══════════════════════════════════════════════════════════════
-# FUENTES DE NOTICIAS
+# FUENTES
 # ═══════════════════════════════════════════════════════════════
-
-PALABRAS_VIRALES_ALTA = [
-    "golpe de estado", "corrupcion", "dictadura", "protestas masivas", "crisis politica",
-    "impeachment", "renuncia", "detencion", "extradicion", "narco", "cartel",
-    "crisis economica", "inflacion record", "devaluacion", "dolar", "pobreza extrema",
-    "masacre", "feminicidio", "secuestro", "violencia", "crimen organizado",
-    "famoso", "celebridad", "escandalo", "divorcio", "muerte",
-    "viral", "tiktok", "tendencia",
-    "mundial", "final", "campeon", "gol"
-]
-
-PALABRAS_VIRALES_MEDIA = [
-    "revelan", "exclusiva", "filtran", "inesperado", "sorprendente", "impactante",
-    "urgente", "alerta", "emergencia"
-]
 
 def obtener_newsapi():
     if not NEWS_API_KEY:
         return []
     noticias = []
-    queries = ['Trump', 'Biden', 'Mexico AMLO', 'Argentina Milei', 'Colombia Petro', 'Chile Boric', 'Venezuela Maduro', 'Ucrania Zelensky', 'Rusia Putin']
+    queries = ['Trump', 'Biden', 'Mexico AMLO', 'Argentina Milei', 'Colombia Petro', 'Chile Boric', 'Venezuela Maduro', 'Ucrania Zelensky']
     for query in queries:
         try:
             r = requests.get('https://newsapi.org/v2/everything', 
@@ -1063,7 +993,7 @@ def obtener_rss_latam():
     return noticias
 
 # ═══════════════════════════════════════════════════════════════
-# PUBLICACION Y CONTROL
+# PUBLICACION FACEBOOK
 # ═══════════════════════════════════════════════════════════════
 
 def publicar_facebook(titulo, texto, imagen_path, hashtags):
@@ -1120,7 +1050,7 @@ def verificar_tiempo():
 
 def main():
     print("\n" + "="*60)
-    print("BOT NOTICIAS VIRALES LATAM 24/7 - V3.0 Imagenes Contextuales")
+    print("BOT NOTICIAS VIRALES LATAM 24/7 - V3.1")
     print(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*60)
     
@@ -1204,15 +1134,13 @@ def main():
         log("ERROR: No hay noticias validas", 'error')
         return False
     
-    # Analizar contexto para imagen
-    log("Analizando contexto de la noticia...", 'imagen')
+    log("Analizando contexto...", 'imagen')
     contexto = analizador.analizar(seleccionada['titulo'], contenido_final, seleccionada.get('descripcion', ''))
-    log(f"Contexto detectado: Personaje={contexto.get('personaje_principal')}, Pais={contexto.get('pais')}, Evento={contexto.get('tipo_evento')}", 'imagen')
+    log(f"Contexto: Personaje={contexto.get('personaje_principal')}, Pais={contexto.get('pais')}", 'imagen')
     
     publicacion = construir_publicacion_viral(seleccionada['titulo'], contenido_final, seleccionada['fuente'])
     hashtags = generar_hashtags_virales(seleccionada['titulo'], contenido_final)
     
-    # Generar imagen contextual
     log("Generando imagen contextual...", 'imagen')
     imagen_path, prompt_usado = generar_imagen_contextual(seleccionada['titulo'], contenido_final, seleccionada.get('descripcion', ''))
     
@@ -1223,7 +1151,8 @@ def main():
         log("ERROR: No se pudo generar imagen", 'error')
         return False
     
-    log(f"Prompt usado: {prompt_usado[:150]}...", 'imagen') if prompt_usado else log("Usando imagen de respaldo", 'advertencia')
+    if prompt_usado:
+        log(f"Prompt: {prompt_usado[:100]}...", 'imagen')
     
     exito = publicar_facebook(seleccionada['titulo'], publicacion, imagen_path, hashtags)
     
@@ -1238,8 +1167,7 @@ def main():
         estado = {
             'ultima_publicacion': datetime.now().isoformat(),
             'github_run_number': os.getenv('GITHUB_RUN_NUMBER'),
-            'ultima_noticia': seleccionada['titulo'][:50],
-            'contexto_imagen': contexto
+            'ultima_noticia': seleccionada['titulo'][:50]
         }
         guardar_json(ESTADO_PATH, estado)
         total = historial.get('estadisticas', {}).get('total_publicadas', 0)
