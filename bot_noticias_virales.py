@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-BOT NOTICIAS VIRALES LATAM 24/7 - V3.2
-Generacion de imagenes contextualizadas con analisis semantico
+BOT NOTICIAS VIRALES LATAM 24/7 - V4.0
+Generacion de imagenes: Gemini -> Poe -> Pollinations (fallback)
 """
 
 import requests
@@ -12,6 +12,8 @@ import hashlib
 import json
 import os
 import random
+import base64
+import io
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from difflib import SequenceMatcher
@@ -24,6 +26,10 @@ GNEWS_API_KEY = os.getenv('GNEWS_API_KEY')
 FB_PAGE_ID = os.getenv('FB_PAGE_ID')
 FB_ACCESS_TOKEN = os.getenv('FB_ACCESS_TOKEN')
 
+# APIs de imagen (en orden de preferencia)
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')  # Primera opcion
+POE_API_KEY = os.getenv('POE_API_KEY')        # Segunda opcion
+
 HISTORIAL_PATH = os.getenv('HISTORIAL_PATH', 'data/historial_viral.json')
 ESTADO_PATH = os.getenv('ESTADO_PATH', 'data/estado_bot_viral.json')
 
@@ -32,7 +38,7 @@ MAX_TITULOS_HISTORIA = 300
 UMBRAL_SIMILITUD_TITULO = 0.85
 UMBRAL_SIMILITUD_CONTENIDO = 0.75
 
-# Colores para imagenes de backup (formato RGB tuples - SIN rgba)
+# Colores para imagenes de backup (formato RGB tuples)
 COLORES_BACKUP = {
     'urgente': (220, 20, 60),      # Crimson
     'negativa': (139, 0, 0),       # DarkRed
@@ -243,7 +249,7 @@ BANDERAS_SIMBOLOS = {
 }
 
 # ═══════════════════════════════════════════════════════════════
-# ANALISIS SEMANTICO AVANZADO
+# ANALISIS SEMANTICO
 # ═══════════════════════════════════════════════════════════════
 
 class AnalizadorNoticias:
@@ -367,13 +373,13 @@ class GeneradorPrompts:
         analisis = self.analizador.analizar(titulo, contenido, descripcion)
         
         if analisis['personaje_principal']:
-            return self._prompt_personaje(analisis, titulo)
+            return self._prompt_personaje(analisis, titulo), analisis
         elif analisis['deporte']:
-            return self._prompt_deporte(analisis, titulo)
+            return self._prompt_deporte(analisis, titulo), analisis
         elif analisis['tipo_evento']:
-            return self._prompt_crisis(analisis, titulo)
+            return self._prompt_crisis(analisis, titulo), analisis
         else:
-            return self._prompt_generico(analisis, titulo)
+            return self._prompt_generico(analisis, titulo), analisis
     
     def _prompt_personaje(self, analisis, titulo):
         personaje = PERSONAJES_POLITICOS[analisis['personaje_principal']]
@@ -603,7 +609,267 @@ def calcular_puntaje_viral(titulo, desc):
     return puntaje
 
 # ═══════════════════════════════════════════════════════════════
-# EXTRACCION Y GENERACION DE IMAGENES
+# GENERACION DE IMAGENES MULTI-API
+# ═══════════════════════════════════════════════════════════════
+
+def generar_imagen_gemini(prompt, titulo):
+    """Genera imagen usando Gemini API (Google) - Primera opcion"""
+    if not GEMINI_API_KEY:
+        return None, "No Gemini API key"
+    
+    try:
+        log("Intentando Gemini...", 'imagen')
+        
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp-image-generation:generateContent?key={GEMINI_API_KEY}"
+        
+        headers = {
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt}
+                ]
+            }],
+            "generationConfig": {
+                "responseModalities": ["Text", "Image"]
+            }
+        }
+        
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Buscar imagen en la respuesta
+            if 'candidates' in data and len(data['candidates']) > 0:
+                candidate = data['candidates'][0]
+                if 'content' in candidate and 'parts' in candidate['content']:
+                    for part in candidate['content']['parts']:
+                        if 'inlineData' in part:
+                            # Decodificar imagen base64
+                            img_data = base64.b64decode(part['inlineData']['data'])
+                            img_path = f'/tmp/viral_gemini_{generar_hash(titulo)}.jpg'
+                            
+                            with open(img_path, 'wb') as f:
+                                f.write(img_data)
+                            
+                            if os.path.getsize(img_path) > 10000:
+                                log(f"Imagen Gemini generada: {img_path}", 'exito')
+                                return img_path, "Gemini"
+        
+        log(f"Gemini fallo: {response.status_code}", 'advertencia')
+        return None, f"Gemini error: {response.status_code}"
+        
+    except Exception as e:
+        log(f"Error Gemini: {e}", 'error')
+        return None, str(e)
+
+def generar_imagen_poe(prompt, titulo):
+    """Genera imagen usando Poe API - Segunda opcion"""
+    if not POE_API_KEY:
+        return None, "No Poe API key"
+    
+    try:
+        log("Intentando Poe...", 'imagen')
+        
+        # Poe usa GraphQL, necesitamos su API especifica
+        # Esto es un ejemplo, la API real puede variar
+        url = "https://api.poe.com/bot/StableDiffusionXL"
+        
+        headers = {
+            "Authorization": f"Bearer {POE_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "query": prompt,
+            "width": 1024,
+            "height": 768
+        }
+        
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'images' in data and len(data['images']) > 0:
+                img_url = data['images'][0]
+                img_response = requests.get(img_url, timeout=30)
+                
+                if img_response.status_code == 200:
+                    img_path = f'/tmp/viral_poe_{generar_hash(titulo)}.jpg'
+                    with open(img_path, 'wb') as f:
+                        f.write(img_response.content)
+                    
+                    if os.path.getsize(img_path) > 10000:
+                        log(f"Imagen Poe generada: {img_path}", 'exito')
+                        return img_path, "Poe"
+        
+        log(f"Poe fallo: {response.status_code}", 'advertencia')
+        return None, f"Poe error: {response.status_code}"
+        
+    except Exception as e:
+        log(f"Error Poe: {e}", 'error')
+        return None, str(e)
+
+def generar_imagen_pollinations(prompt, titulo):
+    """Genera imagen usando Pollinations.ai - Fallback final"""
+    try:
+        log("Usando Pollinations (fallback)...", 'imagen')
+        
+        prompt_encoded = quote(prompt)
+        seed = random.randint(1000, 9999)
+        url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1200&height=630&nologo=true&seed={seed}&enhance=true"
+        
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=50)
+        
+        if response.status_code == 200:
+            img_path = f'/tmp/viral_pollinations_{generar_hash(titulo)}_{seed}.jpg'
+            with open(img_path, 'wb') as f:
+                f.write(response.content)
+            
+            if os.path.getsize(img_path) > 15000:
+                log(f"Imagen Pollinations: {img_path}", 'exito')
+                return img_path, "Pollinations"
+            else:
+                os.remove(img_path)
+                return None, "Imagen muy pequeña"
+        
+        return None, f"HTTP {response.status_code}"
+        
+    except Exception as e:
+        log(f"Error Pollinations: {e}", 'error')
+        return None, str(e)
+
+def generar_imagen_inteligente(titulo, contenido, descripcion=""):
+    """Intenta generar imagen con Gemini -> Poe -> Pollinations"""
+    generador = GeneradorPrompts()
+    prompt, analisis = generador.generar(titulo, contenido, descripcion)
+    
+    log(f"Prompt: {prompt[:100]}...", 'imagen')
+    
+    # 1. Intentar Gemini primero
+    if GEMINI_API_KEY:
+        img_path, fuente = generar_imagen_gemini(prompt, titulo)
+        if img_path:
+            return img_path, prompt, fuente, analisis
+    
+    # 2. Intentar Poe segundo
+    if POE_API_KEY:
+        img_path, fuente = generar_imagen_poe(prompt, titulo)
+        if img_path:
+            return img_path, prompt, fuente, analisis
+    
+    # 3. Fallback a Pollinations
+    img_path, fuente = generar_imagen_pollinations(prompt, titulo)
+    if img_path:
+        return img_path, prompt, fuente, analisis
+    
+    return None, prompt, "Ninguna", analisis
+
+def crear_imagen_backup(titulo, analisis_contexto=None):
+    """Crea imagen de respaldo cuando todas las APIs fallan - SIN 'PERSONAJE:'"""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        
+        # Seleccionar color segun contexto
+        emocion = 'neutral'
+        if analisis_contexto:
+            emocion = analisis_contexto.get('emocion', 'neutral')
+            if analisis_contexto.get('deporte'):
+                emocion = 'deporte'
+            elif analisis_contexto.get('personaje_principal'):
+                emocion = 'politica'
+        
+        color_fondo = COLORES_BACKUP.get(emocion, COLORES_BACKUP['neutral'])
+        
+        # Crear imagen
+        img = Image.new('RGB', (1200, 630), color=color_fondo)
+        draw = ImageDraw.Draw(img)
+        
+        # Cargar fuentes
+        try:
+            font_titulo = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
+            font_sub = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 22)
+            font_info = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
+        except:
+            try:
+                font_titulo = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 40)
+                font_sub = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 22)
+                font_info = font_sub
+            except:
+                font_titulo = ImageFont.load_default()
+                font_sub = font_info = font_titulo
+        
+        # Barra superior e inferior (blanco RGB)
+        draw.rectangle([(0, 0), (1200, 12)], fill=(255, 255, 255))
+        draw.rectangle([(0, 618), (1200, 630)], fill=(255, 255, 255))
+        
+        # Info de contexto arriba - SIN LA PALABRA "PERSONAJE"
+        y_pos = 30
+        if analisis_contexto:
+            info_lineas = []
+            
+            # Solo mostrar el nombre, no "PERSONAJE: nombre"
+            if analisis_contexto.get('personaje_principal'):
+                nombre = PERSONAJES_POLITICOS[analisis_contexto['personaje_principal']]['nombre']
+                info_lineas.append(nombre.upper())  # Solo el nombre, sin etiqueta
+            
+            if analisis_contexto.get('pais'):
+                info_lineas.append(analisis_contexto['pais'].upper())
+            
+            if analisis_contexto.get('deporte'):
+                info_lineas.append(analisis_contexto['deporte'].upper())
+            
+            if analisis_contexto.get('tipo_evento'):
+                # Traducir tipo de evento a español
+                evento_esp = {
+                    'protesta': 'PROTESTA',
+                    'desastre_natural': 'EMERGENCIA',
+                    'economica': 'CRISIS ECONOMICA',
+                    'crimen': 'SEGURIDAD'
+                }.get(analisis_contexto['tipo_evento'], analisis_contexto['tipo_evento'].upper())
+                info_lineas.append(evento_esp)
+            
+            if info_lineas:
+                texto_info = " | ".join(info_lineas)
+                # Color gris claro (RGB)
+                draw.text((50, y_pos), texto_info, font=font_info, fill=(200, 200, 200))
+                y_pos = 60
+        
+        # Titulo centrado con wrap
+        import textwrap
+        titulo_wrapped = textwrap.fill(titulo[:130], width=30)
+        lineas = titulo_wrapped.split('\n')
+        y_start = ((630 - len(lineas) * 48) // 2) + (y_pos // 2)
+        
+        # Dibujar cada linea con sombra
+        for i, linea in enumerate(lineas):
+            y = y_start + (i * 48)
+            # Sombra (negro RGB)
+            draw.text((52, y+2), linea, font=font_titulo, fill=(0, 0, 0))
+            # Texto (blanco RGB)
+            draw.text((50, y), linea, font=font_titulo, fill=(255, 255, 255))
+        
+        # Footer - SIN rgba
+        draw.text((50, 560), "NOTICIAS VIRALES LATAM 24/7", font=font_sub, fill=(255, 255, 255))
+        draw.text((50, 590), f"{datetime.now().strftime('%d/%m/%Y %H:%M')} | Informacion que importa", 
+                 font=font_info, fill=(180, 180, 180))
+        
+        # Guardar
+        img_path = f'/tmp/viral_backup_{generar_hash(titulo[:50])}.jpg'
+        img.save(img_path, 'JPEG', quality=90)
+        
+        log(f"Imagen backup creada: {img_path}", 'exito')
+        return img_path
+        
+    except Exception as e:
+        log(f"Error creando imagen backup: {e}", 'error')
+        return None
+
+# ═══════════════════════════════════════════════════════════════
+# EXTRACCION DE CONTENIDO
 # ═══════════════════════════════════════════════════════════════
 
 def extraer_contenido(url):
@@ -633,126 +899,6 @@ def extraer_contenido(url):
         return None, None
     except:
         return None, None
-
-def generar_imagen_contextual(titulo, contenido, descripcion=""):
-    """Intenta generar imagen con Pollinations.ai"""
-    generador = GeneradorPrompts()
-    prompt = generador.generar(titulo, contenido, descripcion)
-    
-    log(f"Prompt: {prompt[:100]}...", 'imagen')
-    
-    try:
-        prompt_encoded = quote(prompt)
-        seed = random.randint(1000, 9999)
-        url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1200&height=630&nologo=true&seed={seed}&enhance=true"
-        
-        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=50)
-        
-        if response.status_code == 200:
-            img_path = f'/tmp/viral_{generar_hash(titulo)}_{seed}.jpg'
-            with open(img_path, 'wb') as f:
-                f.write(response.content)
-            
-            if os.path.getsize(img_path) > 15000:
-                log(f"Imagen IA generada: {img_path}", 'exito')
-                return img_path, prompt
-            else:
-                os.remove(img_path)
-                log("Imagen muy pequeña, usando backup", 'advertencia')
-                return None, prompt
-        log(f"Error HTTP {response.status_code} de Pollinations", 'error')
-        return None, prompt
-    except Exception as e:
-        log(f"Error generando imagen: {e}", 'error')
-        return None, prompt
-
-def crear_imagen_backup(titulo, analisis_contexto=None):
-    """Crea imagen de respaldo cuando la IA falla - CORREGIDO"""
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-        
-        # Seleccionar color segun contexto
-        emocion = 'neutral'
-        if analisis_contexto:
-            emocion = analisis_contexto.get('emocion', 'neutral')
-            if analisis_contexto.get('deporte'):
-                emocion = 'deporte'
-            elif analisis_contexto.get('personaje_principal'):
-                emocion = 'politica'
-        
-        color_fondo = COLORES_BACKUP.get(emocion, COLORES_BACKUP['neutral'])
-        
-        # Crear imagen
-        img = Image.new('RGB', (1200, 630), color=color_fondo)
-        draw = ImageDraw.Draw(img)
-        
-        # Cargar fuentes
-        try:
-            font_titulo = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
-            font_sub = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 22)
-            font_contexto = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
-        except:
-            try:
-                font_titulo = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 40)
-                font_sub = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 22)
-                font_contexto = font_sub
-            except:
-                font_titulo = ImageFont.load_default()
-                font_sub = font_contexto = font_titulo
-        
-        # Barra superior e inferior (blanco RGB)
-        draw.rectangle([(0, 0), (1200, 12)], fill=(255, 255, 255))
-        draw.rectangle([(0, 618), (1200, 630)], fill=(255, 255, 255))
-        
-        # Info de contexto arriba
-        y_pos = 30
-        if analisis_contexto:
-            info_lineas = []
-            if analisis_contexto.get('personaje_principal'):
-                nombre = PERSONAJES_POLITICOS[analisis_contexto['personaje_principal']]['nombre']
-                info_lineas.append(f"PERSONAJE: {nombre}")
-            if analisis_contexto.get('pais'):
-                info_lineas.append(f"PAIS: {analisis_contexto['pais'].upper()}")
-            if analisis_contexto.get('deporte'):
-                info_lineas.append(f"DEPORTE: {analisis_contexto['deporte'].upper()}")
-            if analisis_contexto.get('tipo_evento'):
-                info_lineas.append(f"EVENTO: {analisis_contexto['tipo_evento'].upper()}")
-            
-            if info_lineas:
-                texto_info = " | ".join(info_lineas)
-                # Color gris claro (RGB) - CORREGIDO
-                draw.text((50, y_pos), texto_info, font=font_contexto, fill=(200, 200, 200))
-                y_pos = 60
-        
-        # Titulo centrado con wrap
-        import textwrap
-        titulo_wrapped = textwrap.fill(titulo[:130], width=30)
-        lineas = titulo_wrapped.split('\n')
-        y_start = ((630 - len(lineas) * 48) // 2) + (y_pos // 2)
-        
-        # Dibujar cada linea con sombra
-        for i, linea in enumerate(lineas):
-            y = y_start + (i * 48)
-            # Sombra (negro RGB)
-            draw.text((52, y+2), linea, font=font_titulo, fill=(0, 0, 0))
-            # Texto (blanco RGB)
-            draw.text((50, y), linea, font=font_titulo, fill=(255, 255, 255))
-        
-        # Footer - CORREGIDO (sin rgba)
-        draw.text((50, 560), "NOTICIAS VIRALES LATAM 24/7", font=font_sub, fill=(255, 255, 255))
-        draw.text((50, 590), f"{datetime.now().strftime('%d/%m/%Y %H:%M')} | Informacion que importa", 
-                 font=font_contexto, fill=(180, 180, 180))
-        
-        # Guardar
-        img_path = f'/tmp/viral_backup_{generar_hash(titulo[:50])}.jpg'
-        img.save(img_path, 'JPEG', quality=90)
-        
-        log(f"Imagen backup creada: {img_path}", 'exito')
-        return img_path
-        
-    except Exception as e:
-        log(f"Error creando imagen backup: {e}", 'error')
-        return None
 
 # ═══════════════════════════════════════════════════════════════
 # PUBLICACION
@@ -1084,7 +1230,7 @@ def verificar_tiempo():
 
 def main():
     print("\n" + "="*60)
-    print("BOT NOTICIAS VIRALES LATAM 24/7 - V3.2")
+    print("BOT NOTICIAS VIRALES LATAM 24/7 - V4.0 Multi-API")
     print(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*60)
     
@@ -1176,18 +1322,22 @@ def main():
     hashtags = generar_hashtags_virales(seleccionada['titulo'], contenido_final)
     
     log("Generando imagen...", 'imagen')
-    imagen_path, prompt_usado = generar_imagen_contextual(seleccionada['titulo'], contenido_final, seleccionada.get('descripcion', ''))
+    imagen_path, prompt_usado, fuente_imagen, analisis_contexto = generar_imagen_inteligente(
+        seleccionada['titulo'], contenido_final, seleccionada.get('descripcion', '')
+    )
     
     if not imagen_path:
-        log("IA fallo, creando imagen backup...", 'advertencia')
+        log("Todas las APIs fallaron, creando imagen backup...", 'advertencia')
         imagen_path = crear_imagen_backup(seleccionada['titulo'], contexto)
+        fuente_imagen = "Backup"
     
     if not imagen_path:
         log("ERROR: No se pudo generar ninguna imagen", 'error')
         return False
     
+    log(f"Imagen generada con: {fuente_imagen}", 'exito')
     if prompt_usado:
-        log(f"Prompt usado: {prompt_usado[:80]}...", 'imagen')
+        log(f"Prompt: {prompt_usado[:80]}...", 'imagen')
     
     exito = publicar_facebook(seleccionada['titulo'], publicacion, imagen_path, hashtags)
     
@@ -1202,7 +1352,8 @@ def main():
         estado = {
             'ultima_publicacion': datetime.now().isoformat(),
             'github_run_number': os.getenv('GITHUB_RUN_NUMBER'),
-            'ultima_noticia': seleccionada['titulo'][:50]
+            'ultima_noticia': seleccionada['titulo'][:50],
+            'fuente_imagen': fuente_imagen
         }
         guardar_json(ESTADO_PATH, estado)
         total = historial.get('estadisticas', {}).get('total_publicadas', 0)
