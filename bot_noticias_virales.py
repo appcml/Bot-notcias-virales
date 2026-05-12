@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-VERDAD HOY — NOTICIAS CHILE 24/7 - V7.0
+VERDAD HOY — NOTICIAS CHILE 24/7 - V7.1
 Foco 100% Chile: noticias nacionales + internacionales relacionadas con Chile
 Prioriza noticias con imagen | CTA poderoso | Publica cada 30 minutos
 MEJORAS V7.0:
@@ -15,6 +15,10 @@ MEJORAS V7.0:
   - Queries NewsAPI actualizadas (gobierno Kast 2026)
   - Reintento inteligente en publicación Facebook (3 intentos)
   - API Graph actualizada a v21.0
+FIX V7.1:
+  - git push del historial después de cada publicación exitosa en GitHub Actions
+  - Sin este fix el runner efímero descartaba el historial en cada ejecución,
+    causando que el bot repitiera siempre la misma noticia de mayor puntaje
 """
 
 import requests
@@ -2314,7 +2318,7 @@ def verificar_tiempo():
 
 def main():
     print("\n" + "=" * 65)
-    print("  VERDAD HOY — NOTICIAS CHILE 24/7  V7.0")
+    print("  VERDAD HOY — NOTICIAS CHILE 24/7  V7.1")
     print("  Noticias nacionales + internacionales relacionadas con Chile")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     if FORZAR_PUBLICACION:
@@ -2492,6 +2496,26 @@ def main():
             'nivel_chile':        nivel_chile,
             'tenia_imagen':       seleccionada.get('tiene_imagen', False),
         })
+
+        # ── Persistir historial en el repositorio (GitHub Actions) ──
+        # Sin este git push, el runner efímero descarta el historial y el bot
+        # repite la misma noticia en cada ejecución.
+        if os.getenv('GITHUB_RUN_NUMBER'):
+            try:
+                import subprocess as _sp
+                _sp.run(['git', 'config', 'user.email', 'bot@verdadhoy.cl'], check=True)
+                _sp.run(['git', 'config', 'user.name',  'VerdadHoyBot'],     check=True)
+                _sp.run(['git', 'add',
+                         HISTORIAL_PATH,
+                         ESTADO_PATH],                                        check=True)
+                _sp.run(['git', 'commit', '-m',
+                         f'[skip ci] historial actualizado — {seleccionada["titulo"][:50]}'],
+                        check=True)
+                _sp.run(['git', 'push'], check=True)
+                log('Historial persistido en el repositorio OK', 'exito')
+            except Exception as _e:
+                log(f'git push falló (no crítico): {_e}', 'advertencia')
+
         total = historial.get('estadisticas', {}).get('total_publicadas', 0) + 1
         log(f"✅ ÉXITO — Total publicadas: {total}", 'exito')
         return True
