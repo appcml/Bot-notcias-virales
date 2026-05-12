@@ -1,24 +1,37 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-VERDAD HOY — NOTICIAS CHILE 24/7 - V7.1
+VERDAD HOY — NOTICIAS CHILE 24/7 - V7.3
 Foco 100% Chile: noticias nacionales + internacionales relacionadas con Chile
-Prioriza noticias con imagen | CTA poderoso | Publica cada 30 minutos
+Prioriza noticias con imagen | CTA poderoso | 12 posts/día en horarios pico
 MEJORAS V7.0:
   - Video automático con diseño split + efecto Ken Burns
   - Voz natural edge-tts (4 presentadores rotativos, español latino)
   - CTA temático doble: en el post y en el video (panel rojo de cierre)
-  - Horarios pico Chile + límite 6 posts/día
   - Modo FORZAR_PUBLICACION para pruebas desde GitHub Actions
-  - NewsData API implementada (estaba declarada pero sin usar)
+  - NewsData API implementada
   - Publicación dual: Facebook video/foto + WordPress (opcional)
   - Queries NewsAPI actualizadas (gobierno Kast 2026)
   - Reintento inteligente en publicación Facebook (3 intentos)
   - API Graph actualizada a v21.0
 FIX V7.1:
-  - git push del historial después de cada publicación exitosa en GitHub Actions
-  - Sin este fix el runner efímero descartaba el historial en cada ejecución,
-    causando que el bot repitiera siempre la misma noticia de mayor puntaje
+  - git push del historial dentro del bot
+MEJORAS V7.2:
+  - MAX_POSTS_POR_DIA subido a 12
+  - Horarios pico redefinidos según audiencia chilena real
+  - Rotación de categorías: max 2 posts/categoría/día, nunca 2 seguidos
+  - Penalización -40 pts si la categoría salió en los últimos 60 min
+  - Filtro de antigüedad: noticias >48h reciben puntaje 0
+  - Noticias internacionales solo si Chile aparece en el TÍTULO
+  - Keywords contingencia Chile 2026
+MEJORAS V7.3:
+  - Keywords política basadas en CARGOS y ROLES, no en nombres de personas
+    → captura cualquier presidente, ministro, senador, diputado, alcalde, etc.
+  - Corrupción elevada a categoría de primer nivel viral (equiparada a política)
+  - Nuevas keywords de corrupción: desfalco, colusión, peculado, audio filtrado,
+    conflicto de interés, sobreseimiento, formalizado, acusación constitucional
+  - Se eliminaron nombres propios de figuras políticas de los keywords de puntaje
+    (el bot cubre a cualquier autoridad, no solo las conocidas al momento de escribir el código)
 """
 
 import requests
@@ -59,19 +72,25 @@ FB_API_VERSION = 'v21.0'   # actualizado desde v18.0
 FB_MAX_REINTENTOS = 3      # intentos antes de declarar fallo en publicación FB
 
 # ── Horarios pico y límite diario ────────────────────────────
-MAX_POSTS_POR_DIA  = 8
+MAX_POSTS_POR_DIA  = 12
 FORZAR_PUBLICACION = os.getenv('FORZAR_PUBLICACION', 'false').lower() == 'true'
 
-# Horarios pico en UTC para audiencia hispanohablante (Chile = UTC-3 o UTC-4)
-# 10:00-14:00 UTC = 06:00-10:00 Chile (mañana)
-# 15:00-19:00 UTC = 11:00-15:00 Chile (mediodía)
-# 22:00-02:00 UTC = 18:00-22:00 Chile (noche)
+# Horarios pico en UTC ajustados a audiencia chilena adulta (UTC-4 invierno, UTC-3 verano)
+# Franja mañana:   07:00-09:30 Chile = 10:00-13:30 UTC (noticias al despertar)
+# Franja mediodía: 12:30-15:00 Chile = 15:30-19:00 UTC (pausa almuerzo)
+# Franja noche:    19:00-23:00 Chile = 22:00-02:00 UTC (mayor debate político y seguridad)
+# Fuente: Sprout Social 2026, RecurPost 2M posts Jan-2026
 HORARIOS_PICO_UTC = [
-    (time(10, 0), time(14, 0)),
-    (time(15, 0), time(19, 0)),
-    (time(22, 0), time(23, 59)),
-    (time(0,  0), time(2,  0)),
+    (time(10, 0), time(13, 30)),   # Mañana Chile 07:00-09:30
+    (time(15, 30), time(19, 0)),   # Mediodía Chile 12:30-15:00
+    (time(22, 0), time(23, 59)),   # Noche Chile 19:00-23:00 (parte 1)
+    (time(0,  0), time(2,  0)),    # Noche Chile 21:00-23:00 (cruce medianoche UTC)
 ]
+
+# ── Anti-repetición de categorías ────────────────────────────
+MAX_POSTS_CATEGORIA_DIA   = 2     # máximo posts de la misma categoría por día
+PENALIZACION_CATEGORIA_60 = 40    # puntos que se restan si la cat. salió hace <60 min
+MAX_EDAD_NOTICIA_HORAS    = 48    # noticias más antiguas que esto reciben puntaje 0
 
 # ── Voces edge-tts — 4 presentadores rotativos latino ───────
 VOCES_TTS = [
@@ -186,18 +205,54 @@ KEYWORDS_CHILE_PRIMARIAS = [
 ]
 
 KEYWORDS_CHILE_SECUNDARIAS = [
-    'boric', 'gobierno chileno', 'gobierno de chile', 'congreso nacional',
-    'carabineros', 'pdi', 'fiscalía', 'minsal', 'seremi', 'municipalidad',
-    'peso chileno', 'banco central de chile', 'economía chilena',
-    'constitución chilena', 'senado chile', 'diputados chile', 'senadores chilenos',
-    'tribunal constitucional', 'corte suprema chile', 'ministerio',
+    # ── Cargos y roles de gobierno (no nombres de personas) ──────────────
+    # Ejecutivo
+    'presidente de chile', 'presidenta de chile',
+    'gobierno de chile', 'gobierno chileno',
+    'ministro', 'ministra', 'ministerio',
+    'subsecretario', 'subsecretaria',
+    'gabinete', 'la moneda', 'palacio de gobierno',
+    'intendente', 'intendenta', 'delegado presidencial',
+    # Legislativo
+    'senado de chile', 'senado chileno',
+    'senador chileno', 'senadora chilena', 'senadores',
+    'cámara de diputados', 'diputado chileno', 'diputada chilena', 'diputados',
+    'congreso nacional', 'congreso de chile',
+    'comisión del senado', 'comisión de diputados',
+    'proyecto de ley', 'acusación constitucional',
+    # Judicial / fiscalización
+    'tribunal constitucional', 'corte suprema de chile',
+    'contraloría', 'contraloría general',
+    'fiscal nacional', 'fiscal regional', 'fiscalía de chile',
+    'poder judicial',
+    # Gobierno local
+    'alcalde', 'alcaldesa', 'municipalidad', 'municipio',
+    'gobernador regional', 'gore',
+    # Partidos y coaliciones (genéricos)
+    'partido político chile', 'coalición de gobierno',
+    'oposición chilena', 'oficialismo chileno',
+    'elecciones chile', 'primarias chile',
+    # ── Instituciones y entidades chilenas ───────────────────────────────
+    'carabineros', 'pdi', 'minsal', 'seremi', 'servel',
+    'banco central de chile', 'peso chileno',
+    'constitución chilena',
     'atacama', 'araucanía', 'magallanes', 'aysén', 'tarapacá', 'biobío',
     'maule', 'ñuble', "o'higgins", 'los ríos', 'los lagos', 'patagonia chilena',
-    'atacameño', 'mapuche', 'rapanui', 'aymara chileno',
+    'mapuche', 'rapanui', 'aymara chileno',
     'litio chile', 'cobre chile', 'minería chilena', 'pesca chilena',
     'vino chileno', 'salmón chileno', 'fruta chilena',
     'isapre', 'fonasa', 'afp chilena', 'sii chile', 'serviu',
     'falabella chile', 'cencosud', 'latam airlines', 'codelco', 'enap',
+    # ── Contingencia Chile 2026 ───────────────────────────────────────────
+    'plan de reconstrucción', 'reconstrucción nacional',
+    'ley miscelánea', 'ajuste fiscal chile', 'dipres',
+    'pnco', 'plan calles sin violencia', 'ministerio de seguridad',
+    'crimen organizado chile', 'tren de aragua chile',
+    'junaeb', 'alimentación escolar', 'gratuidad universitaria',
+    'programa de alimentación', 'recorte educación', 'recorte salud',
+    '142 programas', 'desempleo chile', 'cesantía chile',
+    'precariedad habitacional', 'campamentos chile', 'techo chile',
+    'déficit habitacional',
 ]
 
 # Palabras que indican que una noticia internacional afecta a Chile
@@ -302,27 +357,63 @@ COLORES_BACKUP = {
 # ═══════════════════════════════════════════════════════════════
 
 PALABRAS_CLAVE = {
-    # ── Política ─────────────────────────────────────────────
+    # ── Política — basada en CARGOS, no en nombres de personas ───────────
     'politica': [
-        # Figuras actuales Chile 2026
-        'josé antonio kast', 'kast', 'presidente de chile', 'presidente kast',
-        'partido republicano', 'republicanos', 'gobierno de kast',
-        'johannes kaiser', 'kaiser',
-        'gabriel boric', 'boric', 'expresidente boric',
-        'jeannette jara', 'jara',
-        'evelyn matthei', 'matthei',
-        'vlado mirosevic', 'mirosevic',
-        # Instituciones
-        'gobierno', 'congreso nacional', 'senado', 'cámara de diputados',
-        'diputado', 'diputada', 'senador', 'senadora',
+        # Ejecutivo
+        'presidente de chile', 'presidenta de chile',
+        'gobierno de chile', 'gobierno chileno',
         'ministro', 'ministra', 'ministerio',
-        'gabinete', 'moneda', 'la moneda',
-        'parlamento', 'constitución', 'plebiscito', 'referéndum',
-        'alcalde', 'alcaldesa', 'municipalidad', 'municipio',
-        'partido', 'coalición', 'apruebo dignidad', 'chile vamos',
-        'oposición', 'oficialismo', 'elecciones municipales',
-        'elecciones presidenciales', 'primarias', 'segunda vuelta',
-        'servel', 'tribunal constitucional', 'contraloria',
+        'subsecretario', 'subsecretaria', 'gabinete',
+        'la moneda', 'cadena nacional', 'veto presidencial',
+        'delegado presidencial', 'intendente', 'intendenta',
+        # Legislativo
+        'senado', 'senador', 'senadora', 'cámara de diputados',
+        'diputado', 'diputada', 'congreso nacional',
+        'proyecto de ley', 'acusación constitucional',
+        'comisión mixta', 'quórum', 'urgencia legislativa',
+        # Judicial / fiscalización
+        'tribunal constitucional', 'contraloría', 'corte suprema',
+        'fiscal nacional', 'poder judicial',
+        # Local
+        'alcalde', 'alcaldesa', 'municipalidad', 'gobernador regional',
+        # Procesos electorales
+        'elecciones', 'plebiscito', 'referéndum', 'primarias',
+        'servel', 'segunda vuelta',
+        # Institucional
+        'coalición', 'oposición', 'oficialismo',
+        'partido político', 'programa de gobierno',
+        'reforma constitucional', 'estado de excepción',
+        # Contingencia 2026
+        'plan de reconstrucción', 'ley miscelánea',
+        'ajuste fiscal', 'acuerdo parlamentario',
+        'cacerolazos', 'protesta',
+    ],
+
+    # ── Corrupción — primera línea viral (alto engagement en comentarios) ─
+    'corrupcion': [
+        # Actos
+        'corrupción', 'soborno', 'desfalco', 'fraude', 'lavado de activos',
+        'enriquecimiento ilícito', 'malversación', 'peculado',
+        'colusión', 'cartelización', 'licitación irregular',
+        'factura falsa', 'caso facturas', 'facturas ideológicamente falsas',
+        'tráfico de influencias', 'nepotismo', 'conflicto de interés',
+        # Procedimiento judicial
+        'formalizado', 'formalizada', 'imputado', 'imputada',
+        'acusación fiscal', 'querella', 'sobreseimiento',
+        'prisión preventiva', 'arresto domiciliario', 'condena',
+        'tribunal oral en lo penal', 'corte de apelaciones',
+        # Revelaciones y filtros — muy virales
+        'audio filtrado', 'chats filtrados', 'grabación secreta',
+        'filtración', 'documento filtrado', 'informe secreto',
+        'correos filtrados', 'whatsapp filtrado',
+        # Fiscalización
+        'contraloría investiga', 'contraloría observa',
+        'audit', 'auditoría interna', 'funcionario imputado',
+        'funcionario formalizado', 'ex funcionario detenido',
+        'renuncia exigida', 'interpelación',
+        # Palabras de alto impacto emocional
+        'escándalo', 'polémica', 'denuncia pública',
+        'revelación', 'indignación', 'impunidad',
     ],
 
     # ── Economía ──────────────────────────────────────────────
@@ -338,9 +429,10 @@ PALABRAS_CLAVE = {
         'impuesto', 'tributario', 'sii', 'hacienda',
         'retail', 'falabella', 'cencosud', 'ripley', 'quiebra',
         'startup chilena', 'emprendimiento',
+        'recorte presupuestario', 'ajuste fiscal', 'dipres',
     ],
 
-    # ── Seguridad ciudadana (NUEVA) ────────────────────────────
+    # ── Seguridad ciudadana ───────────────────────────────────
     'seguridad': [
         'seguridad ciudadana', 'delincuencia', 'inseguridad',
         'portonazo', 'carjacking', 'robo con violencia', 'asalto a mano armada',
@@ -354,9 +446,10 @@ PALABRAS_CLAVE = {
         'femicidio', 'violencia intrafamiliar', 'vif',
         'desaparecido', 'desaparecida', 'persona desaparecida',
         'cámara de seguridad', 'imputado formalizado',
+        'pnco', 'plan calles sin violencia',
     ],
 
-    # ── Policial / Judicial ────────────────────────────────────
+    # ── Policial / Judicial ───────────────────────────────────
     'policial': [
         'detenido', 'detenida', 'arrestado', 'arrestada',
         'carabineros', 'pdi', 'fiscalía', 'fiscal',
@@ -369,7 +462,7 @@ PALABRAS_CLAVE = {
         'accidente de tránsito', 'accidente fatal',
     ],
 
-    # ── Social / Vivienda (NUEVA) ──────────────────────────────
+    # ── Social / Vivienda ─────────────────────────────────────
     'social': [
         'vivienda', 'vivienda social', 'conjunto habitacional',
         'serviu', 'subsidio habitacional', 'lista de espera vivienda',
@@ -384,9 +477,10 @@ PALABRAS_CLAVE = {
         'desigualdad', 'brecha social', 'movilidad social',
         'fila de atención', 'lista de espera salud',
         'fonasa', 'cesfam', 'consultorio',
+        'precariedad habitacional', 'déficit habitacional',
     ],
 
-    # ── Educación (NUEVA) ──────────────────────────────────────
+    # ── Educación ─────────────────────────────────────────────
     'educacion': [
         'educación', 'colegio', 'escuela', 'liceo',
         'universidad', 'universidades', 'cruch',
@@ -395,15 +489,14 @@ PALABRAS_CLAVE = {
         'gratuidad universitaria', 'beca', 'crédito universitario', 'cae',
         'huelga estudiantil', 'toma de colegio', 'paro docente',
         'profesores', 'docentes', 'asistentes de educación',
-        'mejoramiento salarial docente',
         'sala cuna', 'jardín infantil', 'junji', 'integra',
         'convivencia escolar', 'bullying', 'acoso escolar',
-        'deserción escolar', 'matrícula', 'sostenedor',
+        'deserción escolar', 'matrícula',
         'prueba pisa', 'simce', 'rendimiento académico',
-        'educación superior', 'postgrado', 'magíster',
+        'junaeb', 'alimentación escolar', 'recorte educación',
     ],
 
-    # ── Internacional ──────────────────────────────────────────
+    # ── Internacional ─────────────────────────────────────────
     'internacional': [
         'onu', 'eeuu', 'argentina', 'perú', 'bolivia', 'brasil',
         'relaciones exteriores', 'embajada', 'canciller', 'acuerdo',
@@ -424,8 +517,6 @@ PALABRAS_CLAVE = {
         'partido', 'torneo', 'campeonato', 'tenis', 'atletismo', 'ciclismo',
         'universidad de chile', 'colo colo', 'universidad católica',
         'conmebol', 'clasificatorias', 'eliminatorias',
-        'alexis sánchez', 'arturo vidal', 'claudio bravo',
-        'ben brereton', 'gary medel',
         'padel', 'basquetbol chile', 'volleyball chile',
     ],
 
@@ -463,15 +554,7 @@ PALABRAS_CLAVE = {
         'protesta', 'manifestación', 'huelga', 'paro', 'disturbio',
         'represión', 'violencia', 'enfrentamiento', 'mapuche', 'araucanía',
         'wallmapu', 'lof', 'weichafe', 'quema de camiones',
-        'corte de ruta', 'barricada', 'desmanes',
-    ],
-
-    # ── Corrupción ────────────────────────────────────────────
-    'corrupcion': [
-        'corrupción', 'soborno', 'desfalco', 'fraude', 'lavado de activos',
-        'enriquecimiento ilícito', 'licitación irregular', 'caso judicial',
-        'peculado', 'malversación', 'colusión', 'caso facturas',
-        'audit', 'contraloría investiga', 'funcionario imputado',
+        'corte de ruta', 'barricada', 'desmanes', 'cacerolazos',
     ],
 
     # ── Escándalo ─────────────────────────────────────────────
@@ -990,11 +1073,26 @@ def generar_hashtags(titulo, descripcion, categoria):
 # PUNTAJE VIRAL — PRIORIZA CHILE + IMAGEN
 # ═══════════════════════════════════════════════════════════════
 
-def calcular_puntaje_viral(titulo, desc, tiene_imagen=False, fuente='', nivel_chile=''):
+def calcular_puntaje_viral(titulo, desc, tiene_imagen=False, fuente='', nivel_chile='', fecha=''):
     txt = f"{titulo} {desc}".lower()
     puntaje = 0
 
-    # ── Bonus imagen (máxima prioridad) ──────────────────────
+    # ── Filtro de antigüedad (V7.2+) ─────────────────────────
+    if fecha:
+        try:
+            import email.utils
+            from datetime import timezone
+            try:
+                dt_noticia = datetime(*email.utils.parsedate(fecha)[:6], tzinfo=timezone.utc)
+            except Exception:
+                dt_noticia = datetime.fromisoformat(fecha.replace('Z', '+00:00'))
+            edad_horas = (datetime.now(timezone.utc) - dt_noticia).total_seconds() / 3600
+            if edad_horas > MAX_EDAD_NOTICIA_HORAS:
+                return 0
+        except Exception:
+            pass
+
+    # ── Bonus imagen ─────────────────────────────────────────
     if tiene_imagen:
         puntaje += BONUS_IMAGEN
 
@@ -1008,15 +1106,56 @@ def calcular_puntaje_viral(titulo, desc, tiene_imagen=False, fuente='', nivel_ch
     if '.cl' in fuente.lower() or 'chile' in fuente.lower():
         puntaje += BONUS_FUENTE_CL
 
-    # ── Impacto del contenido ────────────────────────────────
+    # ── Impacto — cargos y roles (V7.3: sin nombres propios) ─
+    palabras_impacto_cargo = [
+        # Cargos ejecutivos y legislativos
+        'presidente', 'presidenta', 'ministro', 'ministra',
+        'senador', 'senadora', 'diputado', 'diputada',
+        'alcalde', 'alcaldesa', 'gobernador',
+        'subsecretario', 'subsecretaria', 'gabinete',
+        'fiscal nacional', 'fiscal regional', 'contraloría',
+        # Actos de gobierno
+        'proyecto de ley', 'acusación constitucional',
+        'veto', 'cadena nacional', 'urgencia',
+        'reconstrucción', 'ajuste fiscal', 'recorte',
+        'ley miscelánea', 'reforma',
+    ]
+    for p in palabras_impacto_cargo:
+        if p in txt:
+            puntaje += 8
+            if p in titulo.lower():
+                puntaje += 4
+
+    # ── Impacto — corrupción (V7.3: primer nivel, alto bonus) ─
+    palabras_corrupcion = [
+        'corrupción', 'soborno', 'desfalco', 'fraude',
+        'lavado de activos', 'peculado', 'malversación',
+        'colusión', 'enriquecimiento ilícito',
+        'audio filtrado', 'chats filtrados', 'grabación secreta',
+        'filtración', 'correos filtrados',
+        'formalizado', 'formalizada', 'imputado', 'imputada',
+        'acusación fiscal', 'querella', 'sobreseimiento',
+        'conflicto de interés', 'nepotismo', 'tráfico de influencias',
+        'contraloría investiga', 'funcionario detenido',
+        'renuncia exigida', 'interpelación',
+    ]
+    for p in palabras_corrupcion:
+        if p in txt:
+            puntaje += 10           # +10 (vs +8 de otras palabras)
+            if p in titulo.lower():
+                puntaje += 5        # +5 extra si está en el título
+
+    # ── Impacto — seguridad y contingencia ───────────────────
     palabras_impacto = [
         'urgente', 'alerta', 'terremoto', 'tsunami', 'incendio', 'emergencia',
         'fallecido', 'muerto', 'herido', 'desaparecido', 'rescate',
-        'escándalo', 'denuncia', 'corrupción', 'detenido', 'crimen',
+        'escándalo', 'denuncia', 'crimen organizado',
         'protesta', 'huelga', 'paro nacional', 'conflicto',
         'récord', 'histórico', 'primera vez', 'inédito',
-        'boric', 'gobierno', 'congreso', 'senado',
+        'gobierno', 'congreso', 'senado',
         'economía', 'inflación', 'dólar', 'pensiones',
+        'desempleo', 'cesantía', 'junaeb', 'alimentación escolar',
+        'precariedad habitacional',
     ]
     for p in palabras_impacto:
         if p in txt:
@@ -1616,7 +1755,8 @@ def procesar_imagen(noticia):
 def cargar_historial():
     default = {
         'urls': [], 'urls_normalizadas': [], 'hashes': [], 'timestamps': [],
-        'titulos': [], 'estadisticas': {'total_publicadas': 0}
+        'titulos': [], 'categorias': [],
+        'estadisticas': {'total_publicadas': 0}
     }
     h = cargar_json(HISTORIAL_PATH, default)
     for k in default:
@@ -1638,16 +1778,65 @@ def noticia_ya_publicada(historial, url, titulo):
             return True, 'similar'
     return False, 'nuevo'
 
-def guardar_historial(historial, url, titulo):
+def categoria_disponible(historial, categoria):
+    """
+    V7.3: Retorna True si la categoría puede publicarse ahora.
+    Reglas:
+      - max MAX_POSTS_CATEGORIA_DIA posts de esa categoría hoy
+      - no se puede repetir si fue la última categoría publicada
+    """
+    if FORZAR_PUBLICACION:
+        return True
+    hoy = datetime.now().strftime('%Y-%m-%d')
+    timestamps = historial.get('timestamps', [])
+    categorias = historial.get('categorias', [])
+
+    posts_cat_hoy = sum(
+        1 for ts, cat in zip(timestamps, categorias)
+        if ts.startswith(hoy) and cat == categoria
+    )
+    if posts_cat_hoy >= MAX_POSTS_CATEGORIA_DIA:
+        log(f"Categoría '{categoria}' alcanzó límite diario ({MAX_POSTS_CATEGORIA_DIA})", 'info')
+        return False
+
+    if categorias and categorias[-1] == categoria:
+        log(f"Categoría '{categoria}' fue la última publicada — rotando", 'info')
+        return False
+
+    return True
+
+def penalizacion_categoria_reciente(historial, categoria):
+    """
+    V7.3: Resta puntos si la misma categoría salió hace menos de 60 min.
+    """
+    if FORZAR_PUBLICACION:
+        return 0
+    timestamps = historial.get('timestamps', [])
+    categorias = historial.get('categorias', [])
+    ahora = datetime.now()
+    for ts, cat in zip(reversed(timestamps), reversed(categorias)):
+        if cat != categoria:
+            break
+        try:
+            dt = datetime.fromisoformat(ts)
+            mins = (ahora - dt).total_seconds() / 60
+            if mins < 60:
+                return PENALIZACION_CATEGORIA_60
+        except Exception:
+            pass
+    return 0
+
+def guardar_historial(historial, url, titulo, categoria='default'):
     historial['urls'].append(url)
     historial['urls_normalizadas'].append(normalizar_url(url))
     historial['hashes'].append(generar_hash(titulo))
     historial['timestamps'].append(datetime.now().isoformat())
     historial['titulos'].append(titulo)
+    historial['categorias'].append(categoria)
     stats = historial.get('estadisticas', {'total_publicadas': 0})
     stats['total_publicadas'] = stats.get('total_publicadas', 0) + 1
     historial['estadisticas'] = stats
-    for key in ['urls', 'urls_normalizadas', 'hashes', 'timestamps', 'titulos']:
+    for key in ['urls', 'urls_normalizadas', 'hashes', 'timestamps', 'titulos', 'categorias']:
         if len(historial[key]) > MAX_TITULOS_HISTORIA:
             historial[key] = historial[key][-MAX_TITULOS_HISTORIA:]
     guardar_json(HISTORIAL_PATH, historial)
@@ -1812,7 +2001,8 @@ def obtener_rss_chile(feeds, max_noticias=60):
                                        titulo, desc,
                                        tiene_imagen=tiene_imagen,
                                        fuente=fuente,
-                                       nivel_chile=nivel
+                                       nivel_chile=nivel,
+                                       fecha=entry.get('published', ''),
                                    ),
                 })
                 urls_vistas.add(normalizar_url(link))
@@ -1896,7 +2086,8 @@ def obtener_newsapi_chile():
                     'puntaje':      calcular_puntaje_viral(
                                         titulo, desc,
                                         tiene_imagen=tiene_imagen,
-                                        nivel_chile=nivel
+                                        nivel_chile=nivel,
+                                        fecha=art.get('publishedAt', ''),
                                     ),
                 })
         except Exception as e:
@@ -1962,7 +2153,8 @@ def obtener_newsdata_chile():
                     'puntaje':      calcular_puntaje_viral(
                                         titulo, desc,
                                         tiene_imagen=tiene_imagen,
-                                        nivel_chile=nivel
+                                        nivel_chile=nivel,
+                                        fecha=art.get('pubDate', ''),
                                     ),
                 })
         except Exception as e:
@@ -2016,7 +2208,8 @@ def obtener_gnews_chile():
                 'puntaje':      calcular_puntaje_viral(
                                     titulo, desc,
                                     tiene_imagen=tiene_imagen,
-                                    nivel_chile=nivel
+                                    nivel_chile=nivel,
+                                    fecha=art.get('publishedAt', ''),
                                 ),
             })
     except Exception as e:
@@ -2318,7 +2511,7 @@ def verificar_tiempo():
 
 def main():
     print("\n" + "=" * 65)
-    print("  VERDAD HOY — NOTICIAS CHILE 24/7  V7.1")
+    print("  VERDAD HOY — NOTICIAS CHILE 24/7  V7.3")
     print("  Noticias nacionales + internacionales relacionadas con Chile")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     if FORZAR_PUBLICACION:
@@ -2396,6 +2589,12 @@ def main():
         return None
 
     # ── Seleccionar la mejor noticia ─────────────────────────
+    # V7.3: penalizar categorías recientes antes de ordenar
+    for n in noticias_unicas:
+        pen = penalizacion_categoria_reciente(historial, n.get('categoria', 'default'))
+        if pen:
+            n['puntaje'] = max(0, n.get('puntaje', 0) - pen)
+
     con_imagen = sorted(
         [n for n in noticias_unicas if n.get('tiene_imagen')],
         key=lambda x: x.get('puntaje', 0), reverse=True
@@ -2404,10 +2603,25 @@ def main():
         [n for n in noticias_unicas if not n.get('tiene_imagen')],
         key=lambda x: x.get('puntaje', 0), reverse=True
     )
-    candidatas   = con_imagen + sin_imagen
-    seleccionada = candidatas[0]
-    categoria    = seleccionada.get('categoria', 'default')
-    nivel_chile  = seleccionada.get('nivel_chile', 'directo')
+    candidatas = con_imagen + sin_imagen
+
+    # V7.3: respetar rotación de categorías
+    seleccionada = None
+    for candidata in candidatas:
+        if categoria_disponible(historial, candidata.get('categoria', 'default')):
+            seleccionada = candidata
+            break
+
+    if not seleccionada:
+        log("Todas las categorías top bloqueadas — usando candidata de mayor puntaje", 'advertencia')
+        seleccionada = candidatas[0] if candidatas else None
+
+    if not seleccionada:
+        log("Sin candidatas disponibles", 'error')
+        return None
+
+    categoria   = seleccionada.get('categoria', 'default')
+    nivel_chile = seleccionada.get('nivel_chile', 'directo')
 
     log(f"Seleccionada: {seleccionada['titulo'][:70]}", 'info')
     log(f"Categoría: {categoria} | Nivel: {nivel_chile} | "
@@ -2488,7 +2702,7 @@ def main():
         pass
 
     if exito:
-        guardar_historial(historial, seleccionada['url'], seleccionada['titulo'])
+        guardar_historial(historial, seleccionada['url'], seleccionada['titulo'], categoria)
         guardar_json(ESTADO_PATH, {
             'ultima_publicacion': datetime.now().isoformat(),
             'ultima_noticia':     seleccionada['titulo'][:60],
@@ -2496,26 +2710,6 @@ def main():
             'nivel_chile':        nivel_chile,
             'tenia_imagen':       seleccionada.get('tiene_imagen', False),
         })
-
-        # ── Persistir historial en el repositorio (GitHub Actions) ──
-        # Sin este git push, el runner efímero descarta el historial y el bot
-        # repite la misma noticia en cada ejecución.
-        if os.getenv('GITHUB_RUN_NUMBER'):
-            try:
-                import subprocess as _sp
-                _sp.run(['git', 'config', 'user.email', 'bot@verdadhoy.cl'], check=True)
-                _sp.run(['git', 'config', 'user.name',  'VerdadHoyBot'],     check=True)
-                _sp.run(['git', 'add',
-                         HISTORIAL_PATH,
-                         ESTADO_PATH],                                        check=True)
-                _sp.run(['git', 'commit', '-m',
-                         f'[skip ci] historial actualizado — {seleccionada["titulo"][:50]}'],
-                        check=True)
-                _sp.run(['git', 'push'], check=True)
-                log('Historial persistido en el repositorio OK', 'exito')
-            except Exception as _e:
-                log(f'git push falló (no crítico): {_e}', 'advertencia')
-
         total = historial.get('estadisticas', {}).get('total_publicadas', 0) + 1
         log(f"✅ ÉXITO — Total publicadas: {total}", 'exito')
         return True
